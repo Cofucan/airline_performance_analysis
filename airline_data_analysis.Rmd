@@ -1,0 +1,81 @@
+---
+title: "Airline Data Exploration"
+author: "Cofucan"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+This is an EDA of flight data from 1987 to 2008. It is a very large dataset which has been compressed into csv files for each year. For my analysis, I will only be working with data from 2004 to 2008
+
+## Load Libraries
+
+```{r}
+library(tidyverse)
+library(skimr)
+library(here)
+library(janitor)
+```
+
+#### Reading in the column descriptions csv
+
+```{r}
+metadata <- read.csv("airline_dataset_column_info.csv")
+view(metadata)
+```
+
+#### Reading in the data
+
+```{r}
+# 3004 data
+df_airline <- read.csv("O:/GitHub/data_analysis/datasets/airline/2004.csv")
+as_tibble(df_airline)
+glimpse(df_airline)
+```
+
+#### Data Summary & Stats
+
+```{r}
+skim_df = skim_without_charts(df_airline)
+# skim(df_airline)
+skim_df
+```
+
+#### Sort by arrival time in descending order
+
+```{r}
+sorted_arr = df_airline %>% arrange(-ArrTime)
+sorted_arr
+```
+
+#### Average arrival time for each month of 2004
+
+```{r}
+mean_arr <- df_airline %>% group_by(Month) %>% drop_na() %>% summarise(MeanArrivalPerMonth = mean(ArrTime))
+mean_arr
+```
+
+## Python Test
+
+```{python}
+import pandas as pd
+import numpy as np
+
+hotels = pd.read_csv("C:/Users/Cofucan/Desktop/hotel_bookings.csv")
+hotels.info()
+
+print("hello")
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
