@@ -4,3 +4,7 @@
 .Ruserdata
 r_functions.R
 r_libraries.R
+
+airline_data.sqlite
+
+/airline
