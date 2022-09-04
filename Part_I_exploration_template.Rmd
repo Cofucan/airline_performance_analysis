@@ -1,0 +1,207 @@
+---
+title: "Part I - Airline Data Exploration"
+author: "Uche Ofia"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+In this EDA, I explore a dataset of airline on-time performance to try and find insights to flight delay and cancellations. The dataset used is a very large dataset that consists of flight arrival and departure details for all commercial flights within the USA, from October 1987 to April 2008. There are over 120 million observations (flights) in this dataset for flights. The data was compressed into individual CSV files for each year. 
+
+I chose to explore this particular dataset because it would allow me learn new skills and optimization techniques for handling large datasets.
+
+Due to the size of this dataset, it would very difficult to load the data into a Pandas dataframe in memory without reducing it to a very small subset of the data, so I decided to employ the use of R markdown (instead of Jupyter notebook) so that I can use R packages, along with SQL queries, to wrangle the data into a more summarized format that a Pandas dataframe can handle.
+
+
+## Preliminary Wrangling
+
+### Importing R Libraries
+
+```{r message=FALSE}
+library(tidyverse)
+library(skimr)
+library(dplyr)
+library(here) # To locate files based on current working directory
+library(janitor) # Tools for for examining and cleaning dirty data.
+library(reticulate) # For reading R objects in Python
+library(data.table) # For reading large datasets efficiently
+library(inborutils) # For reading CSV files and converting to SQL 
+library(DBI) # Interface to connect with SQL databases
+library(RSQLite) # For connecting with SQL databases
+```
+
+### Importing Python Packages
+
+```{python}
+import pandas as pd
+from pandas.api.types import CategoricalDtype
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+```
+
+### Loading In The Data
+
+This dataset contains 21 large CSV files of flight data for each year from 1987 to 2008, as well as some other CSV files for which contain extra information. I will not directly read any of the large CSV files because it would take too much memory. I will read in the other CSV files, then use R libraries and SQL queries to read in smaller samples of the data to explore.
+
+```{python paths}
+path_column_data = "airline/airline_dataset_column_info.csv"
+path_airport_data = "airline/other_data/airports.csv"
+path_carrier_data = "airline/other_data/carriers.csv"
+path_plane_data = "airline/other_data/plane-data.csv"
+```
+
+```{python}
+# Data on column descriptions for the main files
+column_data = pd.read_csv(path_column_data)
+
+# Data on different airports
+airport_data = pd.read_csv(path_airport_data)
+
+# Airline companies
+carrier_data = pd.read_csv(path_carrier_data)
+
+# Plane data, specifications and other info
+plane_data = pd.read_csv(path_plane_data)
+```
+
+
+```{r}
+# Info on column descriptions for the main files
+column_data <- read.csv(py$path_column_data)
+
+# Data on different airports
+airport_data <- read.csv(py$path_airport_data)
+
+# Information on airline companies
+carrier_data <- read.csv(py$path_carrier_data)
+
+# Plane data, specifications and other info
+plane_data <- read.csv(py$path_plane_data)
+
+```
+
+For the main data, I have written a script that reads in the data in smaller chunks and stores them in a database file (sqlite). Each year's data is stored in its own table. I also store the other data in their own tables so that later, when needed, I can reference them using SQL joins. The process takes a while to run because of the large dataset (over 30 minutes on my PC). 
+
+Also, the original files are named by the year they represent. It is not be good practice to name a database table starting with a number, so the script adds a prefix to each name.
+
+For now, I have added a condition so the code will only be executed if the sqlite file is not detected in the project root directory.
+
+```{r}
+path_main <- "airline/main_data"
+db_file <- "airline_data.sqlite"
+
+save_in_sql <- function() {
+  main_files <- list.files(path=path_main, full.names=TRUE)
+  
+  if (!file.exists(db_file)) {
+    # Creating the airport data table
+    inborutils::csv_to_sqlite(
+                csv_file = py$path_airport_data,
+                table_name = "airports",
+                sqlite_file = db_file,
+                show_progress_bar = FALSE)
+    
+    # Creating the carrier data table
+    inborutils::csv_to_sqlite(
+                csv_file = py$path_carrier_data,
+                table_name = "carriers",
+                sqlite_file = db_file,
+                show_progress_bar = FALSE)
+    
+    # Creating the plane data table
+    inborutils::csv_to_sqlite(
+                csv_file = py$path_plane_data,
+                table_name = "planes",
+                sqlite_file = db_file,
+                show_progress_bar = FALSE)
+    
+    # Creating the tables for each of the years' data
+    for (csv in main_files) {
+      csv_name <- strsplit(csv, "/|[.]")[[1]] # Splitting the csv name by "/" or "."
+      csv_name <- csv_name[length(csv_name)-1] # Getting the second last element of the list
+      table_name <- paste("table", csv_name, sep="_")
+    
+      print("Updating table: %s", table_name)
+      inborutils::csv_to_sqlite(
+                  csv_file = csv,
+                  sqlite_file = db_file, 
+                  table_name = table_name, 
+                  pre_process_size = 1000,
+                  chunk_size = 50000, 
+                  show_progress_bar = TRUE)
+    }
+    
+  }
+}
+
+save_in_sql()
+```
+
+I inspect the database file to be sure that all tables have been added and updated properly
+
+```{r}
+airline_db <- dbConnect(SQLite(), db_file) # Making a connection to db
+
+db_tables <- dbListTables(airline_db) # List out the tables in the db
+print(db_tables)
+
+# db_1993_cols <- dbListFields(airline_db, "table_1993") # Column names for specific table in db
+# print(db_1993_cols)
+```
+
+#### Structure of the dataset
+
+We can see from the above result that there are 29 columns in the table and this is the same across all the tables (the yearly tables), they all have the same columns, but we don't know exactly how many rows are in each table.
+
+The code below is a script/query to return exactly the number of rows (observations) that are in each table. The query takes a few seconds to execute completely.
+
+```{r}
+count_rows <- function() {
+  Table = character() # Empty vector/list to store table names
+  Row_Count = integer() # Empty vector/list to store row counts
+  
+  for (table in db_tables) {
+    query_rows <- sprintf("SELECT COUNT(*) AS Rows FROM %s", table)
+    row_count <- dbGetQuery(airline_db, query_rows)[[1]]
+    
+    Table <- c(Table, table) # Appending each table name to the vector
+    Row_Count <- c(Row_Count, row_count) # Appending each row count to the vector
+  }
+  
+  df_row_count <- data.frame(Table, Row_Count)
+  return(df_row_count)
+}
+count_rows()
+```
+
+We can now see the number of rows in each table, which sums up to over 120 million observations.
+Next, I load in the first 1000 rows of data from a particular year (2005 dataset in this case) using SQL and the R interface
+
+```{r}
+query_test <- "SELECT * FROM table_2005 LIMIT 1000"
+
+tbl(airline_db, sql(query_test)) # Runs the query and displays results without loading it in memory
+
+top_rows <- dbGetQuery(airline_db, query_test) # Runs the query and stores it in a dataframe, in memory♂
+```
+
+#### Features of interest
+
+For this EDA, I am interested in exploring the ideas suggested on the source website which are:
+
+1. When is the best time of day/day of week/time of year to fly to minimise delays?
+2. Do older planes suffer more delays?
+3. How does the number of people flying between different locations change over time?
+4. How well does weather predict plane delays?
+5. Can you detect cascading failures as delays in one airport create delays in others? Are there critical links in the system?
+
+Generally, I am interested in exploring the cause of flight delays and cancellations. I will try to explore as many as I can.
+
+
+
