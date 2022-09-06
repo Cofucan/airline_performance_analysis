@@ -11,7 +11,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ## Introduction
 
-This is an EDA of flight data from 1987 to 2008. It is a very large dataset which has been compressed into csv files for each year. For my analysis, I will only be working with data from 2004 to 2008
+This is an EDA of flight data from 1987 to 2008. It is a very large dataset which has been compressed into csv files for each year. For my analysis, I will only be working with data from 2004 to 2008.
 
 ## Load Libraries
 
@@ -43,7 +43,7 @@ head(variable_data, 30)
 
 #### Reading in 2004 data to R dataframe
 
-Here, I just read in a single CSV file into memory (I don't have enough memory to read all the CSV files and even then, it would take forever to read). 
+Here, I just read in a single CSV file into memory (I don't have enough memory to read all the CSV files and even then, it would take forever to read).
 
 ```{r}
 # 3004 data
@@ -134,22 +134,22 @@ table_2004 <- tbl(airline_db, "table_2004") # Reading a specific table from db
 db_tables <- dbListTables(airline_db) # List out the tables in the db
 print(db_tables)
 
-db_2004_cols <- dbListFields(airline_db, "table_2003") # Column names for specific table in db
-print(db_2004_cols)
+db_1993_cols <- dbListFields(airline_db, "table_1993") # Column names for specific table in db
+print(db_1993_cols)
 
 test_query <- "SELECT DayOfWeek, SUM(DepDelay), SUM(ArrDelay)
               FROM table_2004
               GROUP BY DayOfWeek"
 
 tbl(airline_db, sql(test_query)) # Runs the query and leaves it in db
-dbSendQuery(airline_db, sql(test_query)) # Runs the query and creates a dataframe for it
+# dbSendQuery(airline_db, sql(test_query)) # Runs the query and creates a dataframe for it
 
 # dbDisconnect() # Disconnect from the database when done
 ```
 
 #### Script to rename all the tables in the sqlite db
 
-When I first created the database sqlite file, I wrote a script to automatically add each CSV in a new table on the sqlite database. I used the naming convention "<year>_table", e.g. 2001_table. I later remembered that it is not a good practice to name tables or columns with names starting with numbers. My first thought was to just delete the sqlite file then edit the script (the R code chunk) to do the naming properly (by putting "table" before the year, e.g. "table_2001"), but I considered the fact that it would take a while to create the database file again (35 minutes in my case, for the whole 12GB, 120 million records). So I decided instead to write a script that would just rename each table in the database.
+When I first created the database sqlite file, I wrote a script to automatically add each CSV in a new table on the sqlite database. I used the naming convention "<year>\_table", e.g. 2001_table. I later remembered that it is not a good practice to name tables or columns with names starting with numbers. My first thought was to just delete the sqlite file then edit the script (the R code chunk) to do the naming properly (by putting "table" before the year, e.g. "table_2001"), but I considered the fact that it would take a while to create the database file again (35 minutes in my case, for the whole 12GB, 120 million records). So I decided instead to write a script that would just rename each table in the database.
 
 ```{r rename_sql_tables}
 rename_tables <- function() {
@@ -166,10 +166,21 @@ print(db_tables)
 
 #### Reading in data from sqlite file (with SQL)
 
-```{sql connection = airline_db, output.var = "data_2002"}
-SELECT *
-FROM table_2002
-LIMIT 1000
+```{sql connection = airline_db}
+SELECT TailNum, Year, SUM(Distance) FROM table_1993
+UNION ALL
+SELECT TailNum, Year, SUM(Distance) FROM table_1994
+UNION ALL
+SELECT TailNum, Year, SUM(Distance) FROM table_1995
+GROUP BY TailNum, Year
+ORDER BY TailNum
+
+-- SELECT t94.TailNum, t93.Year, SUM(t95.Distance)
+-- FROM table_1993 AS t93
+-- INNER JOIN table_1994 as t94 ON t93.Year = t94.Year
+-- INNER JOIN table_1995 as t95 ON t94.Year = t95.Year
+-- GROUP BY t94.TailNum, t93.Year
+-- ORDER BY t93.Year
 ```
 
 #### Accessing the SQL output in R
