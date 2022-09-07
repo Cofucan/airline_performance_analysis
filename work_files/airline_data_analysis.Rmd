@@ -1,0 +1,272 @@
+---
+title: "Airline Data Exploration"
+author: "Cofucan"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+This is an EDA of flight data from 1987 to 2008. It is a very large dataset which has been compressed into csv files for each year. For my analysis, I will only be working with data from 2004 to 2008.
+
+## Load Libraries
+
+```{r libraries, message=FALSE}
+library(tidyverse)
+library(skimr)
+library(dplyr)
+library(here) # To locate files based on current working directory
+library(janitor) # Tools for for examining and cleaning dirty data.
+library(reticulate) # For reading R objects in Python
+library(data.table) # For reading large datasets efficiently
+library(inborutils) # For reading CSV files and converting to SQL 
+library(DBI) # Interface to connect with SQL databases
+library(RSQLite) # For connecting with SQL databases
+```
+
+## Reading and Loading The Data
+
+#### Reading in other metadata to R dataframe
+
+```{r}
+variable_data <- read.csv("airline_dataset_column_info.csv")
+airport_data <- read.csv("O:/GitHub/data_analysis/datasets/airline/airports.csv")
+carrier_data <- read.csv("O:/GitHub/data_analysis/datasets/airline/carriers.csv")
+plane_data <- read.csv("O:/GitHub/data_analysis/datasets/airline/plane-data.csv")
+
+head(variable_data, 30)
+```
+
+#### Reading in 2004 data to R dataframe
+
+Here, I just read in a single CSV file into memory (I don't have enough memory to read all the CSV files and even then, it would take forever to read).
+
+```{r}
+# 3004 data
+data_2004 = "O:/GitHub/data_analysis/datasets/airline/main_files/2004.csv"
+
+df_airline <- fread(data_2004, 
+                    select = c("Year", "Month", "DayofMonth", "DayOfWeek", 
+                               "Origin", "DepTime", "ArrTime", "DepDelay", 
+                               "ArrDelay", "Diverted", "Distance"), 
+                    showProgress = TRUE)
+
+as_tibble(df_airline)
+```
+
+#### Merging all CSV files to one CSV file
+
+The function of this code chunk is to read all the CSV files and combine them to one dataframe in memory, but that would require an enormous amount of memory so I don't run this code on my local machine.
+
+```{r mergeAllCSVs}
+csv_dir <- "O:/GitHub/data_analysis/datasets/airline/main_files"
+
+merge_all_csvs <- function() {
+  df <- list.files(path=csv_dir) %>% # list all files in directory
+        lapply(read_csv) %>% # apply a function to each object/item in a list or vector
+        bind_rows # join the rows of each dataframe since they have the same columns
+  return(df)
+}
+```
+
+#### Save all data into sqlite file
+
+Here, I convert all the CSV files to an sqlite database file, with each year's data stored in its own table. This is achieved by iterating over each CSV file and then using the `inborutils` library to read the data in smaller chunks, then recursively updating the sqlite file.
+
+```{r saveInSQLite}
+sqlite_file <- "airline_data.sqlite"
+
+save_in_sql <- function() {
+  csv_files <- list.files(path=csv_dir)
+  csv_paths <- list.files(path=csv_dir, full.names=TRUE)
+  
+  if (!file.exists(sqlite_file)) {
+    for (csv in csv_paths) {
+      csv_name <- strsplit(csv, "/|[.]")[[1]] # Splitting the csv name by "/" or "."
+      csv_name <- csv_name[length(csv_name)-1] # Getting the second last element of the list
+      table_name <- paste("table", csv_name, sep="_")
+    
+      print(table_name)
+      
+      inborutils::csv_to_sqlite(csv_file = csv,
+                  sqlite_file, table_name, pre_process_size = 1000,
+                  chunk_size = 50000, show_progress_bar = TRUE)
+    }
+  }
+}
+
+save_in_sql()
+
+"Completed"
+
+```
+
+#### Reading in select columns to R dataframe
+
+Here, I just read in specific columns from the file and this is much faster than reading in all the data into memory. For this code chunk specifically, I just read in 4 columns and then filter out all rows with negative values.
+
+```{r}
+fourColumns <- fread(data_2004, select = c("DayOfWeek", "Year", "ArrDelay", "DepDelay"), showProgress = TRUE)
+
+# fourColumns <- fourColumns %>%
+#   group_by(DayOfWeek) %>% 
+#   drop_na() %>%
+#   filter(ArrDelay > 0 & DepDelay > 0) %>%
+#   summarize(AvgArrDelay = mean(ArrDelay), AvgDepDelay = mean(DepDelay))
+# fourColumns
+
+filtered_fc <- filter(fourColumns, ArrDelay > 0 & DepDelay > 0)
+filtered_fc
+
+# sprintf("Size of the data in memory: %s MB", utils::object.size(fourColumns)/1000000)
+```
+
+#### Reading in data from sqlite file (with R)
+
+```{r}
+airline_db <- dbConnect(SQLite(), sqlite_file) # Making a connection to db
+table_2004 <- tbl(airline_db, "table_2004") # Reading a specific table from db
+
+db_tables <- dbListTables(airline_db) # List out the tables in the db
+print(db_tables)
+
+db_1993_cols <- dbListFields(airline_db, "table_1993") # Column names for specific table in db
+print(db_1993_cols)
+
+test_query <- "SELECT DayOfWeek, SUM(DepDelay), SUM(ArrDelay)
+              FROM table_2004
+              GROUP BY DayOfWeek"
+
+tbl(airline_db, sql(test_query)) # Runs the query and leaves it in db
+# dbSendQuery(airline_db, sql(test_query)) # Runs the query and creates a dataframe for it
+
+# dbDisconnect() # Disconnect from the database when done
+```
+
+#### Script to rename all the tables in the sqlite db
+
+When I first created the database sqlite file, I wrote a script to automatically add each CSV in a new table on the sqlite database. I used the naming convention "<year>\_table", e.g. 2001_table. I later remembered that it is not a good practice to name tables or columns with names starting with numbers. My first thought was to just delete the sqlite file then edit the script (the R code chunk) to do the naming properly (by putting "table" before the year, e.g. "table_2001"), but I considered the fact that it would take a while to create the database file again (35 minutes in my case, for the whole 12GB, 120 million records). So I decided instead to write a script that would just rename each table in the database.
+
+```{r rename_sql_tables}
+rename_tables <- function() {
+  for (table in db_tables) {
+    year <- strsplit(table, "_")[[1]][1] # Splitting the table name and taking the first element
+    new_name <- paste("table", year, sep="_") 
+    rename_query <- sprintf("ALTER TABLE '%s' RENAME TO %s", table, new_name)
+    dbSendQuery(airline_db, sql(rename_query))
+    # tbl(airline_db, sql(rename_query))
+  }
+}
+print(db_tables)
+```
+
+#### Reading in data from sqlite file (with SQL)
+
+```{sql connection = airline_db}
+SELECT TailNum, Year, SUM(Distance) FROM table_1993
+UNION ALL
+SELECT TailNum, Year, SUM(Distance) FROM table_1994
+UNION ALL
+SELECT TailNum, Year, SUM(Distance) FROM table_1995
+GROUP BY TailNum, Year
+ORDER BY TailNum
+
+-- SELECT t94.TailNum, t93.Year, SUM(t95.Distance)
+-- FROM table_1993 AS t93
+-- INNER JOIN table_1994 as t94 ON t93.Year = t94.Year
+-- INNER JOIN table_1995 as t95 ON t94.Year = t95.Year
+-- GROUP BY t94.TailNum, t93.Year
+-- ORDER BY t93.Year
+```
+
+#### Accessing the SQL output in R
+
+```{r}
+
+```
+
+## Exploring The Data
+
+#### Data Summary & Stats
+
+```{r summmary}
+skim_without_charts(df_airline)
+glimpse(df_airline)
+str(df_airline)
+```
+
+#### Sort by arrival time in descending order
+
+```{r sortByArrival}
+sort_by_arrival <- function() {
+  return(fourColumns %>% arrange(-ArrDelay))
+}
+```
+
+#### Average arrival time for each month of 2004, dropping rows with null values
+
+```{r groupByArrival}
+group_by_arrival <- function() {
+  mean_arr <- df_airline %>% group_by(Month) %>% drop_na() %>% summarise(MeanArrivalPerMonth = mean(ArrTime))
+  return(mean_arr)
+}
+```
+
+#### Python libraries
+
+```{python library}
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+```
+
+#### Python Test
+
+```{python}
+file = "O:/GitHub/data_analysis/datasets/hotel_bookings.csv"
+df = pd.read_csv(file)
+df.head()
+```
+
+#### Accessing Python dataframe in R
+
+```{r}
+as_tibble(py$df)
+skim(py$df)
+```
+
+#### Accessing R dataframe in Python
+
+```{python reg&hist}
+
+def plot_reg_hist(): 
+  plt.figure(figsize = [18, 6])
+  
+  plt.subplot(1, 2, 1)
+  sns.regplot(data = r.filtered_fc, x = "ArrDelay", y = "DepDelay", scatter_kws = {'alpha': 1/20}, fit_reg = False)
+  plt.xlabel("Arrival delay in minutes")
+  plt.ylabel("Departure delay in minutes")
+  
+  plt.subplot(1, 2, 2)
+  plt.hist2d(data = r.filtered_fc, x = "ArrDelay", y = "DepDelay")
+  plt.colorbar()
+  plt.xlabel("Arrival delay in minutes")
+  plt.ylabel("Departure delay in minutes")
+  
+  plt.show()
+
+plot_reg_hist()
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
